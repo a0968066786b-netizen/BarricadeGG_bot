@@ -45,6 +45,66 @@ def pos_to_xy(pos: str) -> Tuple[int, int]:
 def xy_to_pos(x: int, y: int) -> str:
     return chr(ord('a') + x) + str(y + 1)
 
+# ==================== AI 串接相關方法 ====================
+
+def action_id_to_action(action_id: int) -> Tuple[str, str]:
+    """
+    [公開] 將動作 ID（0-208）轉換為行動指令
+    - ID 0-80: 移動動作，計算方式：ID = row_index * 9 + col_index
+    - ID 81-144: 放置橫牆，計算方式：ID = 81 + (row_index * 8 + col_index)
+    - ID 145-208: 放置直牆，計算方式：ID = 145 + (row_index * 8 + col_index)
+        
+    :param action_id: 動作 ID
+    :return: (action_type, param)，例如 ('move', 'e1') 或 ('wall', 'ha3')
+    """
+    if 0 <= action_id <= 80:
+        # 移動動作：ID = row_index * 9 + col_index
+        row_index = action_id // 9
+        col_index = action_id % 9
+        pos = xy_to_pos(col_index, row_index)
+        return ('move', pos)
+    elif 81 <= action_id <= 144:
+        # 放置橫牆：ID = 81 + (row_index * 8 + col_index)
+        wall_id = action_id - 81
+        row_index = wall_id // 8
+        col_index = wall_id % 8
+        wall_code = 'h' + xy_to_pos(col_index, row_index)
+        return ('wall', wall_code)
+    elif 145 <= action_id <= 208:
+        # 放置直牆：ID = 145 + (row_index * 8 + col_index)
+        wall_id = action_id - 145
+        row_index = wall_id // 8
+        col_index = wall_id % 8
+        wall_code = 'v' + xy_to_pos(col_index, row_index)
+        return ('wall', wall_code)
+    else:
+        raise ValueError(f"無效的動作 ID: {action_id}")
+
+def action_to_action_id(action_type: str, param: str) -> int:
+    """
+    [公開] 將行動指令轉換為動作 ID（0-208）
+        
+    :param action_type: 'move' 或 'wall'
+    :param param: 目標格代碼（如 'e1'）或牆體代碼（如 'ha3'）
+    :return: 動作 ID（0-208）
+    """
+    if action_type == 'move':
+        col_index, row_index = pos_to_xy(param)
+        action_id = row_index * 9 + col_index
+        return action_id
+    elif action_type == 'wall':
+        orientation = param[0]
+        col_index, row_index = pos_to_xy(param[1:])
+        if orientation == 'h':
+            action_id = 81 + (row_index * 8 + col_index)
+        elif orientation == 'v':
+            action_id = 145 + (row_index * 8 + col_index)
+        else:
+            raise ValueError(f"無效的牆體方向: {orientation}")
+        return action_id
+    else:
+        raise ValueError(f"無效的行動類型: {action_type}")
+
 class Wall:
     """
     牆體類別，包含橫向(h)與直向(v)牆體
@@ -397,6 +457,99 @@ class Board:
         for row in reversed(board):
             print(' '.join(row))
         print(f"Player1剩餘牆體: {self.player1.walls_left}, Player2剩餘牆體: {self.player2.walls_left}")
+
+    def get_legal_actions_mask(self) -> List[bool]:
+        """
+        [公開] 取得合法動作遮罩（209個布林值的列表）
+        - 索引 0-80: 移動動作
+        - 索引 81-144: 放置橫牆
+        - 索引 145-208: 放置直牆
+        
+        :return: 長度為 209 的布林列表，True 表示該動作合法
+        """
+        mask = [False] * 209
+        
+        # 設定合法的移動動作
+        for x, y in self.current_player.valid_moves:
+            action_id = action_to_action_id('move', xy_to_pos(x, y))
+            mask[action_id] = True
+        
+        # 如果還有牆體可以放置，檢查合法的牆體放置
+        if self.current_player.walls_left > 0:
+            # 檢查所有可能的橫牆
+            for row_index in range(BOARD_SIZE - 1):
+                for col_index in range(BOARD_SIZE - 1):
+                    wall_code = 'h' + xy_to_pos(col_index, row_index)
+                    wall = Wall(wall_code)
+                    if self.is_valid_wall(wall):
+                        action_id = action_to_action_id('wall', wall_code)
+                        mask[action_id] = True
+            
+            # 檢查所有可能的直牆
+            for row_index in range(BOARD_SIZE - 1):
+                for col_index in range(BOARD_SIZE - 1):
+                    wall_code = 'v' + xy_to_pos(col_index, row_index)
+                    wall = Wall(wall_code)
+                    if self.is_valid_wall(wall):
+                        action_id = action_to_action_id('wall', wall_code)
+                        mask[action_id] = True
+        
+        return mask
+
+
+    def get_board_snapshot(self) -> Dict:
+        """
+        [公開] 取得棋盤狀態快照（字典格式）
+        
+        :return: 包含以下鍵值的字典：
+            - player1_pos (str): 如 "e1"
+            - player2_pos (str): 如 "e9"
+            - walls_remaining (dict): {"p1": int, "p2": int}
+            - placed_walls (dict): {"h": [str], "v": [str]}
+            - current_turn (str): "player1" 或 "player2"
+            - winner (str): 空字串或獲勝者名稱
+        """
+        # 轉換牆體集合為字典格式
+        h_walls_list = []
+        v_walls_list = []
+        
+        # 從牆體集合轉換回牆體代碼
+        # 由於牆體儲存時會重複放置相鄰點，需要去重
+        seen_h_walls = set()
+        for _, col, row in self.h_walls:
+            # 使用牆體的起始點作為識別符
+            if col not in seen_h_walls or row not in seen_h_walls:
+                wall_code = 'h' + xy_to_pos(col, row)
+                if wall_code not in h_walls_list:
+                    h_walls_list.append(wall_code)
+                seen_h_walls.add((col, row))
+        
+        seen_v_walls = set()
+        for _, col, row in self.v_walls:
+            # 使用牆體的起始點作為識別符
+            if (col, row) not in seen_v_walls:
+                wall_code = 'v' + xy_to_pos(col, row)
+                if wall_code not in v_walls_list:
+                    v_walls_list.append(wall_code)
+                seen_v_walls.add((col, row))
+        
+        # 檢查獲勝者
+        winner = self.check_win()
+        
+        return {
+            'player1_pos': xy_to_pos(self.player1.pos[0], self.player1.pos[1]),
+            'player2_pos': xy_to_pos(self.player2.pos[0], self.player2.pos[1]),
+            'walls_remaining': {
+                'p1': self.player1.walls_left,
+                'p2': self.player2.walls_left
+            },
+            'placed_walls': {
+                'h': h_walls_list,
+                'v': v_walls_list
+            },
+            'current_turn': self.current_player.name,
+            'winner': winner
+        }
 
 # 範例遊戲流程
 if __name__ == "__main__":
