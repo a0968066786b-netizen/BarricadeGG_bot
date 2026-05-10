@@ -1,0 +1,23 @@
+需求/
+
+# --- 訓練產出 (資料夾保留，內容忽略) ---
+models/*
+!models/.gitkeep
+logs/*
+!logs/.gitkeep
+
+# --- Python 暫存檔 ---
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# --- 虛擬環境 ---
+venv/
+.venv/
+env/
+
+# --- 其他系統與 IDE 檔案 ---
+.DS_Store
+.vscode/
+.idea/
