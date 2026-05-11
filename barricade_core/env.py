@@ -1,12 +1,13 @@
 """
-Quoridor 遊戲的 OpenAI Gym 環境實現
+Quoridor 遊戲的 Gymnasium 環境實現
 將 Board 邏輯轉化為標準的 Gym 接口
 """
 import numpy as np
 import gymnasium
 from gymnasium import spaces
 from typing import Tuple, Dict, Any
-from rule import (
+
+from .rules import (
     Board, 
     action_id_to_action, 
     pos_to_xy, 
@@ -18,35 +19,30 @@ from rule import (
 
 class QuoridorEnv(gymnasium.Env):
     """
-    Quoridor 遊戲的 Gym 環境實現
+    Quoridor 遊戲的 Gymnasium 環境實現
     
     觀察空間：
-    - 棋盤狀態打平為向量或矩陣
+    - 棋盤狀態打平為向量
     - 包含玩家位置、牆體信息、可走位置等
     
     動作空間：
     - Discrete(209)：0-80 移動動作，81-144 橫牆，145-208 直牆
     """
     
-    metadata = {'render.modes': ['human']}
+    metadata = {'render_modes': ['human']}
     
-    def __init__(self):
+    def __init__(self, render_mode=None):
         super(QuoridorEnv, self).__init__()
+        
+        self.render_mode = render_mode
         
         # 初始化遊戲棋盤
         self.board = Board()
         
-        # 定義動作空間：209 個動作 (0-80: 移動, 81-144: 橫牆, 145-208: 直牆)
+        # 定義動作空間
         self.action_space = spaces.Discrete(209)
         
-        # 定義觀察空間（Box 格式）
-        # 觀察向量包含：
-        # - 玩家1位置: 2 (x, y)
-        # - 玩家2位置: 2 (x, y)
-        # - 玩家1剩餘牆體: 1
-        # - 玩家2剩餘牆體: 1
-        # - 棋盤狀態矩陣: 81 (9x9)，用於表示牆體和可走位置
-        # 總共：2 + 2 + 1 + 1 + 81 + 81 = 168
+        # 定義觀察空間
         obs_size = 2 + 2 + 1 + 1 + BOARD_SIZE * BOARD_SIZE + BOARD_SIZE * BOARD_SIZE
         self.observation_space = spaces.Box(
             low=0, 
@@ -56,30 +52,22 @@ class QuoridorEnv(gymnasium.Env):
         )
         
         # 記錄遊戲狀態
-        self.current_player_index = 0  # 0 for player1, 1 for player2
+        self.current_player_index = 0
         self.step_count = 0
-        self.max_steps = 200  # 防止無限遊戲
+        self.max_steps = 200
         
     def reset(self, seed=None, options=None):
-        """
-        重置環境到初始狀態
-        """
-        # 按照 Gymnasium 規範處理 seed
+        """重置環境到初始狀態"""
         super().reset(seed=seed)
         
-        # 重置底層 Board 邏輯
         self.board = Board()
         self.step_count = 0
+        self.current_player_index = 0
         
-        # 返回觀察值和一個空的資訊字典 (Gymnasium 規範要求返回 Tuple: obs, info)
         return self._get_observation(), {}
     
     def _get_observation(self) -> np.ndarray:
-        """
-        將棋盤狀態轉換為觀察向量
-        
-        :return: 觀察向量 (obs_size,)
-        """
+        """將棋盤狀態轉換為觀察向量"""
         obs = []
         
         # 1. 玩家1位置 (2 values)
@@ -96,14 +84,11 @@ class QuoridorEnv(gymnasium.Env):
         # 4. 玩家2剩餘牆體 (1 value)
         obs.append(self.board.player2.walls_left)
         
-        # 5. 棋盤狀態矩陣 - 牆體信息 (81 values)
-        # 將棋盤轉換為 9x9 的矩陣：
-        # 0 = 空格，1 = 玩家1位置，2 = 玩家2位置，3 = 有牆體
+        # 5. 棋盤狀態矩陣 (81 values)
         board_state = np.zeros((BOARD_SIZE, BOARD_SIZE), dtype=np.uint8)
         board_state[p1_y, p1_x] = 1
         board_state[p2_y, p2_x] = 2
         
-        # 標記牆體位置（簡化版：只標記有牆的格子）
         for _, col, row in self.board.h_walls:
             if 0 <= row < BOARD_SIZE and 0 <= col < BOARD_SIZE:
                 board_state[row, col] = 3
@@ -123,31 +108,24 @@ class QuoridorEnv(gymnasium.Env):
         return np.array(obs, dtype=np.uint8)
     
     def _get_legal_actions_mask(self) -> np.ndarray:
-        """
-        取得合法動作遮罩，用於約束 AI 的動作選擇
-        
-        :return: 長度為 209 的布林陣列
-        """
+        """取得合法動作遮罩"""
         return np.array(self.board.get_legal_actions_mask(), dtype=np.float32)
     
     def step(self, action: int) -> Tuple[np.ndarray, float, bool, bool, Dict]:
-        """
-        執行動作，符合 Gymnasium 標準回傳 5 個值
-        """
+        """執行動作，符合 Gymnasium 標準回傳 5 個值"""
         self.step_count += 1
         
         reward = 0.0
-        terminated = False  # 因為勝負而結束
-        truncated = False   # 因為超時而結束
+        terminated = False
+        truncated = False
         info = {}
         
         # 1. 檢查動作是否合法
         legal_mask = self._get_legal_actions_mask()
         if not legal_mask[action]:
             reward = -1.0
-            terminated = True # 非法動作視為遊戲終止
+            terminated = True
             info['reason'] = 'illegal_action'
-            # 注意：回傳 5 個值
             return self._get_observation(), reward, terminated, truncated, info
         
         # 2. 執行動作邏輯
@@ -176,7 +154,7 @@ class QuoridorEnv(gymnasium.Env):
                 info['winner'] = 'other_player'
         
         elif self.step_count >= self.max_steps:
-            truncated = True # 超過最大步數使用 truncated
+            truncated = True
             reward -= 0.5
             info['reason'] = 'max_steps_exceeded'
         
@@ -184,28 +162,17 @@ class QuoridorEnv(gymnasium.Env):
         if not (terminated or truncated):
             self.board.switch_player()
         
-        # 回傳標準的 5 個值
         return self._get_observation(), reward, terminated, truncated, info
     
-    def render(self, mode: str = 'human'):
-        """
-        渲染棋盤狀態（文字輸出）
-        
-        :param mode: 渲染模式
-        """
-        if mode == 'human':
+    def render(self):
+        """渲染棋盤狀態（文字輸出）"""
+        if self.render_mode == 'human':
             self.board.print_board()
     
     def close(self):
-        """
-        關閉環境
-        """
+        """關閉環境"""
         pass
     
     def get_board_snapshot(self) -> Dict:
-        """
-        取得棋盤快照（用於調試）
-        
-        :return: 棋盤狀態字典
-        """
+        """取得棋盤快照（用於調試）"""
         return self.board.get_board_snapshot()

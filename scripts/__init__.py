@@ -1,0 +1,3 @@
+"""
+Quoridor Training Scripts Package
+"""
