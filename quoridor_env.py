@@ -60,16 +60,19 @@ class QuoridorEnv(gymnasium.Env):
         self.step_count = 0
         self.max_steps = 200  # 防止無限遊戲
         
-    def reset(self) -> np.ndarray:
+    def reset(self, seed=None, options=None):
         """
-        重置環境，開始新的一局遊戲
+        重置環境到初始狀態
+        """
+        # 按照 Gymnasium 規範處理 seed
+        super().reset(seed=seed)
         
-        :return: 初始觀察值
-        """
+        # 重置底層 Board 邏輯
         self.board = Board()
-        self.current_player_index = 0
         self.step_count = 0
-        return self._get_observation()
+        
+        # 返回觀察值和一個空的資訊字典 (Gymnasium 規範要求返回 Tuple: obs, info)
+        return self._get_observation(), {}
     
     def _get_observation(self) -> np.ndarray:
         """
@@ -127,75 +130,62 @@ class QuoridorEnv(gymnasium.Env):
         """
         return np.array(self.board.get_legal_actions_mask(), dtype=np.float32)
     
-    def step(self, action: int) -> Tuple[np.ndarray, float, bool, Dict]:
+    def step(self, action: int) -> Tuple[np.ndarray, float, bool, bool, Dict]:
         """
-        執行一個動作，返回 (觀察值, 獎勵, 完成標誌, 額外信息)
-        
-        :param action: 動作 ID (0-208)
-        :return: (observation, reward, done, info)
+        執行動作，符合 Gymnasium 標準回傳 5 個值
         """
         self.step_count += 1
         
-        # 預設獎勵
         reward = 0.0
-        done = False
+        terminated = False  # 因為勝負而結束
+        truncated = False   # 因為超時而結束
         info = {}
         
-        # 檢查動作是否合法
+        # 1. 檢查動作是否合法
         legal_mask = self._get_legal_actions_mask()
         if not legal_mask[action]:
-            # 非法動作，給予負獎勵並結束遊戲
             reward = -1.0
-            done = True
+            terminated = True # 非法動作視為遊戲終止
             info['reason'] = 'illegal_action'
-            return self._get_observation(), reward, done, info
+            # 注意：回傳 5 個值
+            return self._get_observation(), reward, terminated, truncated, info
         
-        # 將動作 ID 轉換為實際動作
+        # 2. 執行動作邏輯
         action_type, param = action_id_to_action(action)
-        
-        # 評估動作的獎勵（基於棋盤邏輯）
         base_reward = self.board.evaluate_action_reward(action_type, param)
-        
-        # 執行動作
         success = self.board.take_action(action_type, param)
         
         if not success:
-            # 動作失敗，給予負獎勵
             reward = -1.0
-            done = True
+            terminated = True
             info['reason'] = 'action_failed'
-            return self._get_observation(), reward, done, info
+            return self._get_observation(), reward, terminated, truncated, info
         
-        # 若動作成功，使用棋盤評估的獎勵
-        if base_reward != float('-inf'):
-            reward = base_reward
-        else:
-            reward = -0.1  # 小負獎勵
+        # 3. 計算獎勵
+        reward = base_reward if base_reward != float('-inf') else -0.1
         
-        # 檢查獲勝條件
+        # 4. 檢查結束條件
         winner = self.board.check_win()
         if winner:
-            # 有玩家獲勝
-            done = True
+            terminated = True
             if winner == self.board.current_player.name:
-                reward += 100.0  # 巨額獎勵
+                reward += 100.0
                 info['winner'] = 'current_player'
             else:
-                reward -= 50.0  # 失敗懲罰
+                reward -= 50.0
                 info['winner'] = 'other_player'
-            info['reason'] = 'game_over'
         
-        # 檢查是否超過最大步數
         elif self.step_count >= self.max_steps:
-            done = True
+            truncated = True # 超過最大步數使用 truncated
+            reward -= 0.5
             info['reason'] = 'max_steps_exceeded'
-            reward -= 0.5  # 輕微懲罰
         
-        # 切換到下一個玩家
-        if not done:
+        # 5. 切換玩家
+        if not (terminated or truncated):
             self.board.switch_player()
         
-        return self._get_observation(), reward, done, info
+        # 回傳標準的 5 個值
+        return self._get_observation(), reward, terminated, truncated, info
     
     def render(self, mode: str = 'human'):
         """
