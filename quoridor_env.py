@@ -3,8 +3,8 @@ Quoridor 遊戲的 OpenAI Gym 環境實現
 將 Board 邏輯轉化為標準的 Gym 接口
 """
 import numpy as np
-import gym
-from gym import spaces
+import gymnasium
+from gymnasium import spaces
 from typing import Tuple, Dict, Any
 from rule import (
     Board, 
@@ -16,7 +16,7 @@ from rule import (
 )
 
 
-class QuoridorEnv(gym.Env):
+class QuoridorEnv(gymnasium.Env):
     """
     Quoridor 遊戲的 Gym 環境實現
     
