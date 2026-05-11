@@ -19,7 +19,7 @@ def example_1_basic_environment():
     env = QuoridorEnv()
     
     # 重置環境並獲取初始觀察
-    obs = env.reset()
+    obs,info = env.reset()
     print(f"初始觀察向量形狀: {obs.shape}")
     print(f"觀察向量: {obs[:20]}...")  # 只顯示前 20 個元素
     
@@ -40,7 +40,8 @@ def example_1_basic_environment():
         action = np.random.choice(legal_actions)
         
         # 執行動作
-        obs, reward, done, info = env.step(action)
+        obs, reward, terminated, truncated, info = env.step(action)
+        done= terminated or truncated
         print(f"  Step {step+1}: 動作={action}, 獎勵={reward:.2f}, 完成={done}")
         
         if done:
@@ -77,7 +78,8 @@ def example_2_full_game():
         action = np.random.choice(legal_actions)
         
         # 執行動作
-        obs, reward, done, info = env.step(action)
+        obs, reward, terminated, truncated, info = env.step(action)
+        done = terminated or truncated
         total_reward += reward
         step_count += 1
         
@@ -129,8 +131,9 @@ def example_3_legal_actions():
     # 執行一次移動，看合法動作如何變化
     if move_actions:
         action = move_actions[0]
-        obs, reward, done, info = env.step(action)
-        
+        obs, reward, terminated, truncated, info = env.step(action)
+        done =terminated or truncated
+
         if not done:
             legal_mask_after = env._get_legal_actions_mask()
             legal_actions_after = np.where(legal_mask_after)[0]
@@ -164,7 +167,8 @@ def example_4_reward_structure():
             break
         
         action = np.random.choice(legal_actions)
-        obs, reward, done, info = env.step(action)
+        obs, reward, terminated, truncated, info = env.step(action)
+        done = terminated or truncated
         
         rewards.append(reward)
         actions.append(action)
