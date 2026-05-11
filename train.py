@@ -177,9 +177,10 @@ def evaluate_agent(
             action, _ = model.predict(obs, deterministic=True)
             
             # 執行動作
-            obs, reward, done, info = env.step(action)
+            obs, reward, terminated, truncated, info = env.step(action)
             episode_reward += reward
             step_count += 1
+            done = terminated or truncated
             
             if render:
                 env.render()
@@ -227,9 +228,10 @@ def play_game_with_agent(model_path: str, render: bool = True):
         action, _ = model.predict(obs, deterministic=True)
         
         # 執行動作
-        obs, reward, done, info = env.step(action)
+        obs, reward, terminated, truncated, info = env.step(action)
         step_count += 1
-        
+        done = terminated or truncated
+
         if render:
             env.render()
             print(f"Step {step_count} | Action: {action} | Reward: {reward:.2f}")
