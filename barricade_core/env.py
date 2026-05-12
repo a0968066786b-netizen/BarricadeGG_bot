@@ -135,9 +135,11 @@ class QuoridorEnv(gymnasium.Env):
         # 1. 檢查動作是否合法
         legal_mask = self._get_legal_actions_mask()
         if not legal_mask[action]:
+            # 非法動作：給予可接受的懲罰，但不結束遊戲，讓AI繼續嘗試
             reward = -10.0
-            terminated = True
             info['reason'] = 'illegal_action'
+            # 切換玩家，允許遊戲繼續
+            self.board.switch_player()
             return self._get_observation(), reward, terminated, truncated, info
         
         # 2. 記錄動作前的狀態
@@ -148,9 +150,11 @@ class QuoridorEnv(gymnasium.Env):
         success = self.board.take_action(action_type, param)
         
         if not success:
-            reward = -10.0
-            terminated = True
+            # 動作失敗：給予可接受的懲罰，但不結束遊戲，讓AI繼續嘗試
+            reward = -2.0
             info['reason'] = 'action_failed'
+            # 切換玩家，允許遊戲繼續
+            self.board.switch_player()
             return self._get_observation(), reward, terminated, truncated, info
         
         # 4. 動作成功，開始計算獎勵
