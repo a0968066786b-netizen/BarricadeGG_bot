@@ -112,7 +112,19 @@ class QuoridorEnv(gymnasium.Env):
         return np.array(self.board.get_legal_actions_mask(), dtype=np.float32)
     
     def step(self, action: int) -> Tuple[np.ndarray, float, bool, bool, Dict]:
-        """執行動作，符合 Gymnasium 標準回傳 5 個值"""
+        """
+        執行動作，符合 Gymnasium 標準回傳 5 個值
+        
+        獎勵設計：
+        - 非法動作/動作失敗：-10（重罰）
+        - 每步動作稅：-0.2（防止拖延）
+        - 距離縮短：+1.0（靠近終點）
+        - 距離不變：-0.5（額外懲罰）
+        - 距離增加：-1.0（遠離終點）
+        - 對手被阻礙：額外獎勵（基於 evaluate_action_reward）
+        - 勝利：+150（大幅獎勵）
+        - 超時未果：-10（截斷時扣分）
+        """
         self.step_count += 1
         
         reward = 0.0
@@ -123,42 +135,74 @@ class QuoridorEnv(gymnasium.Env):
         # 1. 檢查動作是否合法
         legal_mask = self._get_legal_actions_mask()
         if not legal_mask[action]:
-            reward = -1.0
+            reward = -10.0
             terminated = True
             info['reason'] = 'illegal_action'
             return self._get_observation(), reward, terminated, truncated, info
         
-        # 2. 執行動作邏輯
+        # 2. 記錄動作前的狀態
         action_type, param = action_id_to_action(action)
-        base_reward = self.board.evaluate_action_reward(action_type, param)
+        distance_before = self.board.get_distance_to_goal()
+        
+        # 3. 執行動作
         success = self.board.take_action(action_type, param)
         
         if not success:
-            reward = -1.0
+            reward = -10.0
             terminated = True
             info['reason'] = 'action_failed'
             return self._get_observation(), reward, terminated, truncated, info
         
-        # 3. 計算獎勵
-        reward = base_reward if base_reward != float('-inf') else -0.1
+        # 4. 動作成功，開始計算獎勵
+        # 4.1 步數稅：每步固定扣除
+        reward -= 0.2
         
-        # 4. 檢查結束條件
+        # 4.2 距離差獎勵
+        distance_after = self.board.get_distance_to_goal()
+        
+        if distance_after != -1:  # 未被封鎖
+            distance_diff = distance_before - distance_after
+            
+            if distance_diff > 0:
+                # 距離縮短，給予獎勵
+                reward += 1.0 * distance_diff
+            elif distance_diff == 0:
+                # 距離不變，額外懲罰（防止原地踏步）
+                reward -= 0.5
+            else:
+                # 距離增加（不該發生，但保險起見）
+                reward -= 1.0
+        else:
+            # 被封鎖，給予重罰
+            reward -= 10.0
+            terminated = True
+            info['reason'] = 'blocked'
+            return self._get_observation(), reward, terminated, truncated, info
+        
+        # 4.3 整合基本獎勵（路徑成本差異）
+        base_reward = self.board.evaluate_action_reward(action_type, param)
+        if base_reward != float('-inf'):
+            # 基本獎勵作為補充，但不覆蓋距離差獎勵
+            reward += base_reward * 0.3
+        
+        # 5. 檢查勝利條件
         winner = self.board.check_win()
         if winner:
             terminated = True
             if winner == self.board.current_player.name:
-                reward += 100.0
+                reward += 150.0
                 info['winner'] = 'current_player'
             else:
-                reward -= 50.0
+                reward -= 10.0
                 info['winner'] = 'other_player'
         
+        # 6. 檢查超時
         elif self.step_count >= self.max_steps:
             truncated = True
-            reward -= 0.5
+            reward -= 10.0
             info['reason'] = 'max_steps_exceeded'
         
-        # 5. 切換玩家
+        # 7. 切換玩家
         if not (terminated or truncated):
             self.board.switch_player()
         

@@ -2,7 +2,7 @@
 Quoridor 遊戲規則實現
 依據遊戲規則.md，建立棋盤、玩家、牆體、移動與放置牆體的基本邏輯
 """
-from typing import List, Tuple, Set, Dict
+from typing import List, Tuple, Set, Dict,Optional
 from collections import deque
 
 # 棋盤大小
@@ -314,8 +314,37 @@ class Board:
                     queue.append(((tx, ty), cost+1))
         return -1
 
+    def get_distance_to_goal(self, player_name: Optional[str] = None) -> int:
+        """
+        取得玩家到目標的距離
+        
+        Args:
+            player_name: 玩家名稱 ('player1' 或 'player2')，若為 None 則使用當前玩家
+            
+        Returns:
+            int: 距離值（以最短路徑步數計算），若無法到達則返回 -1
+        """
+        if player_name is None:
+            player = self.current_player
+        elif player_name == 'player1':
+            player = self.player1
+        elif player_name == 'player2':
+            player = self.player2
+        else:
+            return -1
+        
+        distance = self.calc_shortest_path_cost(player.pos, player.goal_row)
+        return distance
+
     def evaluate_action_reward(self, action_type: str, param: str) -> float:
-        """評分方法：計算 Total_Reward = ΔSelf_Progress + ΔOpponent_Obstruction"""
+        """
+        評分方法：計算 Total_Reward = ΔSelf_Progress + ΔOpponent_Obstruction
+        
+        根據AI規則：
+        - 靠近終點(離終點更近，最小路徑成本更低)：+ 分數
+        - 成功放置牆體阻礙對手(讓對手的最小路徑成本增加)：+ 分數
+        - 被封鎖(自己的路徑被封鎖的最小路徑成本增加)：- 分數
+        """
         self_cost_before = self.calc_shortest_path_cost(self.current_player.pos, self.current_player.goal_row)
         opp_cost_before = self.calc_shortest_path_cost(self.other_player.pos, self.other_player.goal_row)
         
@@ -341,6 +370,7 @@ class Board:
         self_cost_after = self.calc_shortest_path_cost(self_pos_after, self.current_player.goal_row, h_walls, v_walls)
         opp_cost_after = self.calc_shortest_path_cost(opp_pos_after, self.other_player.goal_row, h_walls, v_walls)
         
+        # 檢查是否有玩家被封鎖
         if self_cost_after == -1 or opp_cost_after == -1:
             return float('-inf')
         
@@ -348,6 +378,70 @@ class Board:
         delta_opp = opp_cost_after - opp_cost_before
         total_reward = delta_self + delta_opp
         return total_reward
+
+    def get_reward_for_action(self, action_type: str, param: str) -> float:
+        """
+        根據AI訓練規則計算完整的獎勵值
+        
+        規則定義：
+        - 非法動作：-1（懲罰）
+        - 正常動作：基於 evaluate_action_reward() 計算的路徑成本差異
+        - 獲勝動作：+100（勝利獎勵）
+        
+        Returns:
+            float: 獎勵值
+                - -1：非法動作或被封鎖
+                - 其他值：基於AI進展的獎勵
+                - +100：達到終點獲勝
+        """
+        # 檢查動作是否合法
+        if not self.is_valid_action(action_type, param):
+            return -1.0
+        
+        # 執行動作前先計算獎勵（不實際改變狀態）
+        base_reward = self.evaluate_action_reward(action_type, param)
+        
+        # 如果基礎獎勵為負無限（代表被封鎖），返回-1
+        if base_reward == float('-inf'):
+            return -1.0
+        
+        # 檢查這個動作是否會導致獲勝
+        if action_type == 'move':
+            target = pos_to_xy(param)
+            if target[1] == self.current_player.goal_row:
+                return 100.0  # 獲勝獎勵
+        
+        return base_reward
+
+    def is_valid_action(self, action_type: str, param: str) -> bool:
+        """
+        檢查動作是否合法
+        
+        Args:
+            action_type: 'move' 或 'wall'
+            param: 位置代碼（e.g., 'e1', 'ha3'）
+            
+        Returns:
+            bool: 動作是否合法
+        """
+        if action_type == 'move':
+            try:
+                target = pos_to_xy(param)
+                if target not in self.current_player.valid_moves:
+                    return False
+                return True
+            except:
+                return False
+        elif action_type == 'wall':
+            try:
+                if self.current_player.walls_left == 0:
+                    return False
+                wall = Wall(param)
+                return self.is_valid_wall(wall)
+            except:
+                return False
+        else:
+            return False
 
     def check_win(self) -> str:
         """檢查是否有玩家獲勝"""
