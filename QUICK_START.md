@@ -10,7 +10,7 @@ cd BarricadeGG_bot
 pip install -r requirements.txt
 
 # 3. 驗證安裝
-python -c "from quoridor_core import QuoridorEnv; print('✓ 安裝成功!')"
+python -c "from barricade_core import QuoridorEnv; print('✓ 安裝成功!')"
 ```
 
 ### 🏋️ 第二步：訓練模型
@@ -78,7 +78,7 @@ python scripts/evaluate.py \
 ## 目錄結構簡明說明
 
 ```
-quoridor_core/      ← 遊戲邏輯和環境
+barricade_core/      ← 遊戲邏輯和環境
   ├── rules.py      ← 棋盤、玩家、規則
   └── env.py        ← Gymnasium 環境
 
@@ -96,7 +96,7 @@ logs/               ← TensorBoard 日誌 (自動創建)
 
 | 問題 | 解決方案 |
 |------|--------|
-| `ModuleNotFoundError: quoridor_core` | 確保在項目根目錄運行，或執行 `pip install -e .` |
+| `ModuleNotFoundError: barricade_core` | 確保在項目根目錄運行，或執行 `pip install -e .` |
 | 訓練很慢 | 正常 (CPU 約 30-60 分鐘/100k 步) |
 | 找不到模型文件 | 先訓練模型: `python scripts/train.py` |
 | 記憶體不足 | 減少參數: `--batch-size 32 --n-steps 1024` |

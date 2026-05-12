@@ -37,7 +37,7 @@ python scripts/evaluate.py --mode play
 ## 項目結構
 
 ```
-├── quoridor_core/        # 核心遊戲和環境實現
+├── barricade_core/        # 核心遊戲和環境實現
 │   ├── env.py           # Gymnasium 環境
 │   └── rules.py         # 遊戲規則
 ├── scripts/              # 訓練和評估腳本
