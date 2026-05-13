@@ -56,15 +56,6 @@ class QuoridorEnv(gymnasium.Env):
         self.step_count = 0
         self.max_steps = 200
         
-        # ===== 優化追蹤機制 =====
-        # 追蹤每個玩家到達過的最小距離（破紀錄獎勵）
-        self.p1_min_distance_record = float('inf')
-        self.p2_min_distance_record = float('inf')
-        
-        # 追蹤最近 5 步的位置（重複動作懲罰）
-        self.p1_position_history = []  # 最近 5 步 Player1 的位置
-        self.p2_position_history = []  # 最近 5 步 Player2 的位置
-        
     def reset(self, seed=None, options=None):
         """重置環境到初始狀態"""
         super().reset(seed=seed)
@@ -72,12 +63,6 @@ class QuoridorEnv(gymnasium.Env):
         self.board = Board()
         self.step_count = 0
         self.current_player_index = 0
-        
-        # 重置優化追蹤機制
-        self.p1_min_distance_record = float('inf')
-        self.p2_min_distance_record = float('inf')
-        self.p1_position_history = []
-        self.p2_position_history = []
         
         return self._get_observation(), {}
     
@@ -126,18 +111,25 @@ class QuoridorEnv(gymnasium.Env):
         """取得合法動作遮罩"""
         return np.array(self.board.get_legal_actions_mask(), dtype=np.float32)
     
+    def action_masks(self) -> np.ndarray:
+        """
+        標準動作遮罩介面 - 由 MaskablePPO 調用
+        
+        Returns:
+            長度 209 的布林陣列，表示當前可執行的動作
+        """
+        return np.array(self.board.get_legal_actions_mask(), dtype=np.bool_)
+    
     def step(self, action: int) -> Tuple[np.ndarray, float, bool, bool, Dict]:
         """
         執行動作，符合 Gymnasium 標準回傳 5 個值
         
-        優化的獎勵設計：
-        - 非法動作/動作失敗：-10（重罰）
-        - 每步動作稅：-1.0（提高步數稅，迫使 AI 追求效率）
-        - 破紀錄距離：+5.0（只在到達新紀錄時獎勵）
-        - 重複動作懲罰：-5.0（如果最近 5 步內出現循環）
-        - 對手被阻礙：額外獎勵（基於 evaluate_action_reward）
-        - 勝利：+150（大幅獎勵）
-        - 超時未果：-10（截斷時扣分）
+        重構的獎勵設計（導向目標型）：
+        - 強化距離差獎勵：(delta_self * 5.0) + (delta_opponent * 5.0)
+        - 放牆激勵：成功 +1.0，顯著阻挡 +10.0
+        - 已有 Masking，移除非法動作懲罰
+        - 勝利：+200
+        - 超時：-5
         """
         self.step_count += 1
         
@@ -146,104 +138,83 @@ class QuoridorEnv(gymnasium.Env):
         truncated = False
         info = {}
         
-        # 1. 檢查動作是否合法
+        # 1. 檢查動作是否合法（雖然 Masking 應該防止非法動作，但仍做防守性檢查）
         legal_mask = self._get_legal_actions_mask()
         if not legal_mask[action]:
-            # 非法動作：給予可接受的懲罰，但不結束遊戲，讓AI繼續嘗試
-            reward = -10.0
-            info['reason'] = 'illegal_action'
-            # 切換玩家，允許遊戲繼續
+            # 已有 Masking，此情況理論上不應發生，若發生則忽略並切換玩家
+            info['reason'] = 'illegal_action_masked'
             self.board.switch_player()
             return self._get_observation(), reward, terminated, truncated, info
         
-        # 2. 記錄動作前的狀態
+        # 2. 記錄動作前的狀態（用於計算距離差）
         action_type, param = action_id_to_action(action)
-        distance_before = self.board.get_distance_to_goal()
-        current_pos = self.board.current_player.pos
+        
+        # 獲取執行動作前的雙方到終點距離
+        self_distance_before = self.board.get_distance_to_goal(self.board.current_player.name)
+        opponent_distance_before = self.board.get_distance_to_goal(self.board.other_player.name)
         
         # 3. 執行動作
         success = self.board.take_action(action_type, param)
         
         if not success:
-            # 動作失敗：給予可接受的懲罰，但不結束遊戲，讓AI繼續嘗試
-            reward = -2.0
+            # 動作失敗（不應發生，因為已檢查合法性），切換玩家
             info['reason'] = 'action_failed'
-            # 切換玩家，允許遊戲繼續
             self.board.switch_player()
             return self._get_observation(), reward, terminated, truncated, info
         
-        # 4. 動作成功，開始計算獎勵
-        # 4.1 加重的步數稅：每步扣除 -1.0（提高步數成本）
-        reward -= 1.0
+        # 4. 動作成功，計算獎勵
+        # 獲取執行動作後的雙方到終點距離
+        self_distance_after = self.board.get_distance_to_goal(self.board.current_player.name)
+        opponent_distance_after = self.board.get_distance_to_goal(self.board.other_player.name)
         
-        # 4.2 優化：只獎勵「破紀錄」的距離
-        distance_after = self.board.get_distance_to_goal()
-        
-        if distance_after != -1:  # 未被封鎖
-            # 更新玩家的最小距離紀錄
-            if self.board.current_player.name == 'player1':
-                if distance_after < self.p1_min_distance_record:
-                    # 打破紀錄，給予獎勵
-                    self.p1_min_distance_record = distance_after
-                    reward += 5.0
-                    info['record_broken'] = True
-            else:
-                if distance_after < self.p2_min_distance_record:
-                    # 打破紀錄，給予獎勵
-                    self.p2_min_distance_record = distance_after
-                    reward += 5.0
-                    info['record_broken'] = True
+        # 4.1 計算距離差獎勵
+        # delta_self: 我方距離減少（更接近終點）為正值
+        # delta_opponent: 對手距離增加（被阻礙）為正值
+        if self_distance_after != -1:
+            delta_self = self_distance_before - self_distance_after
         else:
-            # 被封鎖，給予重罰
-            reward -= 10.0
+            # 自己被封鎖，終止遊戲
+            reward = -50.0
             terminated = True
-            info['reason'] = 'blocked'
+            info['reason'] = 'self_blocked'
             return self._get_observation(), reward, terminated, truncated, info
         
-        # 4.3 優化：重複動作懲罰
-        # 記錄位置歷史（最多 5 步）
-        if self.board.current_player.name == 'player1':
-            self.p1_position_history.append(current_pos)
-            if len(self.p1_position_history) > 5:
-                self.p1_position_history.pop(0)
-            # 檢查是否出現循環（位置重複）
-            if len(self.p1_position_history) == 5:
-                # 檢查最後 5 步中是否有重複位置
-                if self.p1_position_history.count(current_pos) > 1:
-                    reward -= 5.0
-                    info['cycle_detected'] = True
+        if opponent_distance_after != -1:
+            delta_opponent = opponent_distance_before - opponent_distance_after
         else:
-            self.p2_position_history.append(current_pos)
-            if len(self.p2_position_history) > 5:
-                self.p2_position_history.pop(0)
-            # 檢查是否出現循環（位置重複）
-            if len(self.p2_position_history) == 5:
-                # 檢查最後 5 步中是否有重複位置
-                if self.p2_position_history.count(current_pos) > 1:
-                    reward -= 5.0
-                    info['cycle_detected'] = True
+            delta_opponent = 0  # 對手被封鎖不懲罰，但也不額外獎勵
         
-        # 4.4 整合基本獎勵（路徑成本差異）
-        base_reward = self.board.evaluate_action_reward(action_type, param)
-        if base_reward != float('-inf'):
-            # 基本獎勵作為補充，權重降低（因為已有破紀錄獎勵）
-            reward += base_reward * 0.1
+        # 強化距離差獎勵
+        reward += (delta_self * 5.0) + (delta_opponent * 5.0)
+        
+        # 4.2 放牆激勵
+        if action_type == 'wall':
+            # 放置牆體成功，基礎獎勵
+            reward += 1.0
+            
+            # 如果該牆體導致對手的最短路徑顯著增加
+            if delta_opponent > 0:
+                reward += 10.0
+                info['wall_effective'] = True
+        
+        # 4.3 基本步數稅（略微懲罰每一步，鼓勵高效）
+        reward -= 0.05
         
         # 5. 檢查勝利條件
         winner = self.board.check_win()
         if winner:
             terminated = True
             if winner == self.board.current_player.name:
-                reward += 150.0
+                reward += 200.0
                 info['winner'] = 'current_player'
             else:
-                reward -= 10.0
+                reward -= 50.0
                 info['winner'] = 'other_player'
         
         # 6. 檢查超時
         elif self.step_count >= self.max_steps:
             truncated = True
-            reward -= 10.0
+            reward -= 50.0
             info['reason'] = 'max_steps_exceeded'
         
         # 7. 切換玩家

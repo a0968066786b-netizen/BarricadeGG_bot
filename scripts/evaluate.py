@@ -1,6 +1,6 @@
 """
 Quoridor AI Agent 評估腳本
-評估訓練好的模型
+評估訓練好的模型（使用 MaskablePPO 確保動作遮罩被應用）
 """
 import os
 import sys
@@ -9,7 +9,8 @@ from pathlib import Path
 # 將父目錄添加到路徑
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from stable_baselines3 import PPO
+import numpy as np
+from sb3_contrib import MaskablePPO
 
 from barricade_core import QuoridorEnv
 
@@ -20,20 +21,22 @@ def evaluate_agent(
     render: bool = False
 ):
     """
-    評估訓練好的 Agent
+    評估訓練好的 MaskablePPO Agent
     
     :param model_path: 模型文件路徑
     :param num_episodes: 評估的遊戲數
     :param render: 是否渲染遊戲
     :return: 勝率和平均獎勵
+    
+    關鍵: 使用 action_masks 進行預測，確保 AI 不會「盲打」
     """
     # 檢查模型文件是否存在
     if not os.path.exists(model_path):
         print(f"錯誤: 找不到模型文件 {model_path}")
         return None, None
     
-    # 加載模型
-    model = PPO.load(model_path)
+    # 加載 MaskablePPO 模型
+    model = MaskablePPO.load(model_path)
     
     # 創建環境
     env = QuoridorEnv(render_mode='human' if render else None)
@@ -54,8 +57,10 @@ def evaluate_agent(
         step_count = 0
         
         while not (terminated or truncated):
-            # 預測動作
-            action, _ = model.predict(obs, deterministic=True)
+            # ✅ 關鍵: 從環境獲取動作遮罩並傳遞給 predict
+            # 這確保模型只從合法動作中選擇，不會「盲打」
+            action_masks = env.action_masks()
+            action, _ = model.predict(obs, action_masks=action_masks, deterministic=True)
             
             # 執行動作
             obs, reward, terminated, truncated, info = env.step(action)
@@ -99,14 +104,16 @@ def play_game(model_path: str):
     與訓練好的 Agent 進行一局遊戲
     
     :param model_path: 模型文件路徑
+    
+    ✅ 使用 action_masks 確保 AI 不會「盲打」
     """
     # 檢查模型文件是否存在
     if not os.path.exists(model_path):
         print(f"錯誤: 找不到模型文件 {model_path}")
         return
     
-    # 加載模型
-    model = PPO.load(model_path)
+    # 加載 MaskablePPO 模型
+    model = MaskablePPO.load(model_path)
     
     # 創建環境
     env = QuoridorEnv(render_mode='human')
@@ -120,8 +127,9 @@ def play_game(model_path: str):
     step_count = 0
     
     while not (terminated or truncated):
-        # 預測動作
-        action, _ = model.predict(obs, deterministic=True)
+        # ✅ 關鍵: 從環境獲取動作遮罩並傳遞給 predict
+        action_masks = env.action_masks()
+        action, _ = model.predict(obs, action_masks=action_masks, deterministic=True)
         
         # 執行動作
         obs, reward, terminated, truncated, info = env.step(action)

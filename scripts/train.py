@@ -1,6 +1,6 @@
 """
 Quoridor AI Agent 訓練腳本
-使用 Stable Baselines3 的 PPO 演算法訓練 AI Agent
+使用 sb3_contrib 的 MaskablePPO 演算法訓練 AI Agent（具動作遮罩）
 """
 import os
 import sys
@@ -10,7 +10,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import numpy as np
-from stable_baselines3 import PPO
+from sb3_contrib import MaskablePPO
+from sb3_contrib.common.policies import MaskableActorCriticPolicy
 from stable_baselines3.common.callbacks import CheckpointCallback
 
 from barricade_core import QuoridorEnv
@@ -18,18 +19,18 @@ from barricade_core import QuoridorEnv
 
 def train_ppo_agent(
     total_timesteps: int = 100000,
-    learning_rate: float = 3e-4,
-    n_steps: int = 2048,
+    learning_rate: float = 0.0001,
+    n_steps: int = 4096,
     batch_size: int = 64,
     save_dir: str = 'models',
     tensorboard_log_dir: str = 'logs'
 ):
     """
-    訓練 PPO Agent
+    訓練 MaskablePPO Agent（具動作遮罩）
     
     :param total_timesteps: 總訓練時間步數
-    :param learning_rate: 學習率
-    :param n_steps: 每次更新前收集的步數
+    :param learning_rate: 學習率（預設: 0.0001，降低以求穩定）
+    :param n_steps: 每次更新前收集的步數（預設: 4096，增加以提高探索能力）
     :param batch_size: 批次大小
     :param save_dir: 模型保存目錄
     :param tensorboard_log_dir: TensorBoard 日誌目錄
@@ -38,17 +39,18 @@ def train_ppo_agent(
     Path(save_dir).mkdir(exist_ok=True)
     Path(tensorboard_log_dir).mkdir(exist_ok=True)
     
-    print(f"開始訓練 Quoridor AI Agent...")
+    print(f"開始訓練 Quoridor AI Agent（MaskablePPO）...")
     print(f"總時間步數: {total_timesteps}")
     print(f"學習率: {learning_rate}")
+    print(f"每次更新前收集的步數: {n_steps}")
     print()
     
     # 創建環境
     env = QuoridorEnv()
     
-    # 配置 PPO 策略和超參數
-    model = PPO(
-        policy='MlpPolicy',
+    # 配置 MaskablePPO 策略和超參數
+    model = MaskablePPO(
+        policy=MaskableActorCriticPolicy,
         env=env,
         learning_rate=learning_rate,
         n_steps=n_steps,
@@ -57,7 +59,7 @@ def train_ppo_agent(
         gamma=0.99,
         gae_lambda=0.95,
         clip_range=0.2,
-        ent_coef=0.0,
+        ent_coef=0.05,  # 提高熵係數以增加探索能力（原為 0.0）
         vf_coef=0.5,
         max_grad_norm=0.5,
         verbose=1,
@@ -73,6 +75,11 @@ def train_ppo_agent(
     )
     
     # 開始訓練
+    # ✅ 關鍵: MaskablePPO 會自動在訓練過程中調用 env.action_masks()
+    # 確保 AI 只從合法動作中採樣，不會「盲打」
+    print("\n✅ 動作遮罩已啟用 - AI 將只從合法動作中選擇")
+    print("=" * 60)
+    
     model.learn(
         total_timesteps=total_timesteps,
         callback=[checkpoint_callback],
@@ -103,8 +110,8 @@ def main():
     parser.add_argument(
         '--learning-rate',
         type=float,
-        default=3e-4,
-        help='學習率 (預設: 3e-4)'
+        default=0.0001,
+        help='學習率 (預設: 0.0001，已調整為更穩定的值)'
     )
     parser.add_argument(
         '--batch-size',
@@ -115,8 +122,8 @@ def main():
     parser.add_argument(
         '--n-steps',
         type=int,
-        default=2048,
-        help='每次更新前收集的步數 (預設: 2048)'
+        default=4096,
+        help='每次更新前收集的步數 (預設: 4096，已增加以提高探索能力)'
     )
     parser.add_argument(
         '--save-dir',
