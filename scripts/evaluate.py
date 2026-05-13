@@ -63,7 +63,7 @@ def evaluate_agent(
             action, _ = model.predict(obs, action_masks=action_masks, deterministic=True)
             
             # 執行動作
-            obs, reward, terminated, truncated, info = env.step(action)
+            obs, reward, terminated, truncated, info = env.step(int(action))
             episode_reward += reward
             step_count += 1
             
@@ -132,7 +132,7 @@ def play_game(model_path: str):
         action, _ = model.predict(obs, action_masks=action_masks, deterministic=True)
         
         # 執行動作
-        obs, reward, terminated, truncated, info = env.step(action)
+        obs, reward, terminated, truncated, info = env.step(int(action))
         step_count += 1
         
         env.render()

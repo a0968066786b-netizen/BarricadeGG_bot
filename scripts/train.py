@@ -11,7 +11,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import numpy as np
 from sb3_contrib import MaskablePPO
-from sb3_contrib.common.policies import MaskableActorCriticPolicy
 from stable_baselines3.common.callbacks import CheckpointCallback
 
 from barricade_core import QuoridorEnv
@@ -50,7 +49,7 @@ def train_ppo_agent(
     
     # 配置 MaskablePPO 策略和超參數
     model = MaskablePPO(
-        policy=MaskableActorCriticPolicy,
+        policy="MaskableActorCriticPolicy",
         env=env,
         learning_rate=learning_rate,
         n_steps=n_steps,
