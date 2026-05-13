@@ -450,15 +450,77 @@ class Board:
         return ""
 
     def print_board(self):
-        """輸出棋盤狀態（簡易文字版）"""
-        board = [['.' for _ in range(BOARD_SIZE)] for _ in range(BOARD_SIZE)]
+        """
+        輸出棋盤狀態（包含玩家和牆壁）
+        
+        棋盤顯示格式：
+        - 'R': Player1（紅方）
+        - 'B': Player2（藍方）
+        - '─': 水平牆壁
+        - '│': 垂直牆壁
+        - '┼': 牆壁交叉點
+        - '.': 空格
+        - ' ': 牆壁檢查點（不可見）
+        """
+        # 創建擴展棋盤 (17x17)，奇數位置放牆壁，偶數位置放玩家
+        display_size = BOARD_SIZE * 2 + 1
+        board = [[' ' for _ in range(display_size)] for _ in range(display_size)]
+        
+        # 填充玩家位置和可走的格子
+        for x in range(BOARD_SIZE):
+            for y in range(BOARD_SIZE):
+                board[y * 2][x * 2] = '.'
+        
+        # 放置玩家
         x1, y1 = self.player1.pos
+        board[y1 * 2][x1 * 2] = 'R'
+        
         x2, y2 = self.player2.pos
-        board[y1][x1] = 'R'
-        board[y2][x2] = 'B'
-        for row in reversed(board):
-            print(' '.join(row))
-        print(f"Player1剩餘牆體: {self.player1.walls_left}, Player2剩餘牆體: {self.player2.walls_left}")
+        board[y2 * 2][x2 * 2] = 'B'
+        
+        # 放置水平牆壁
+        for _, col, row in self.h_walls:
+            # 水平牆壁位於 (col, row) 的下方
+            display_row = row * 2
+            display_col = col * 2 + 1
+            board[display_row][display_col] = '─'
+        
+        # 放置垂直牆壁
+        for _, col, row in self.v_walls:
+            # 垂直牆壁位於 (col, row) 的右側
+            display_row = row * 2 + 1
+            display_col = col * 2
+            board[display_row][display_col] = '│'
+        
+        # 處理牆壁交叉點
+        for _, col, row in self.h_walls:
+            display_row = row * 2
+            for dc in [0, 2]:
+                display_col = col * 2 + 1 - dc
+                if 0 <= display_col < display_size:
+                    for _, vc, vr in self.v_walls:
+                        v_display_row = vr * 2 + 1
+                        v_display_col = vc * 2
+                        if v_display_row == display_row + 1 and v_display_col == display_col:
+                            board[display_row][display_col] = '┼'
+        
+        # 反向輸出（從上到下）
+        print("\n      a   b   c   d   e   f   g   h   i")
+        for y in range(display_size - 1, -1, -1):
+            row_label = ""
+            if y % 2 == 0:
+                row_label = f"{(y // 2) + 1}"
+            else:
+                row_label = " "
+            
+            row_str = f"{row_label}  " + ''.join(board[y])
+            print(row_str)
+        
+        # 輸出玩家信息
+        print(f"\n📊 遊戲狀態:")
+        print(f"  Player1 (R) - 位置: {xy_to_pos(self.player1.pos[0], self.player1.pos[1])}, 剩餘牆體: {self.player1.walls_left}")
+        print(f"  Player2 (B) - 位置: {xy_to_pos(self.player2.pos[0], self.player2.pos[1])}, 剩餘牆體: {self.player2.walls_left}")
+        print(f"  當前回合: {self.current_player.name}")
 
     def get_legal_actions_mask(self) -> List[bool]:
         """取得合法動作遮罩（209個布林值的列表）"""
