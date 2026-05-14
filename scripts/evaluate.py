@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import numpy as np
 from sb3_contrib import MaskablePPO
 
-from barricade_core import QuoridorEnv
+from barricade_core import QuoridorEnv,action_id_to_action
 
 
 def evaluate_agent(
@@ -136,7 +136,7 @@ def play_game(model_path: str):
         step_count += 1
         
         env.render()
-        print(f"Step {step_count} | Action: {action} | Reward: {reward:.2f}")
+        print(f"Step {step_count} | Action: {action_id_to_action( int(action) )} | Reward: {reward:.2f}")
         print("-" * 60)
     
     print(f"遊戲結束!")
