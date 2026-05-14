@@ -27,12 +27,12 @@ STRAIGHT_JUMP = {
     'right': (2, 0)
 }
 
-# 斜角規則定義
+# 斜角規則定義 - 相對於對手位置的偏移（當直線被阻擋時可以跳到對手身邊）
 DIAGONAL_JUMP = {
-    'up': ((-1, 1), (1, 1)),
-    'down': ((-1, -1), (1, -1)),
-    'left': ((-1, -1), (-1, 1)),
-    'right': ((1, 1), (1, -1))
+    'up': ((-1, 0), (1, 0)),      # 向上被阻時，跳到對手左邊或右邊
+    'down': ((-1, 0), (1, 0)),    # 向下被阻時，跳到對手左邊或右邊
+    'left': ((0, -1), (0, 1)),    # 向左被阻時，跳到對手上邊或下邊
+    'right': ((0, -1), (0, 1))    # 向右被阻時，跳到對手上邊或下邊
 }
 
 
@@ -84,7 +84,8 @@ def action_to_action_id(action_type: str, param: str) -> int:
         return action_id
     elif action_type == 'wall':
         orientation = param[0]
-        col_index, row_index = pos_to_xy(param[1:])
+        col_index = ord(param[1]) - ord('a')
+        row_index = int(param[2]) - 1  # 溝槽 1~8 → 動作網格列索引 0~7
         if orientation == 'h':
             action_id = 81 + (row_index * 8 + col_index)
         elif orientation == 'v':
@@ -97,10 +98,27 @@ def action_to_action_id(action_type: str, param: str) -> int:
 
 
 class Wall:
-    """牆體類別，包含橫向(h)與直向(v)牆體"""
+    """牆體類別，包含橫向(h)與直向(v)牆體。
+
+    代碼後兩位依 遊戲規則.md：為牆溝槽交叉點；第三位為 1~8（牆 k 在第 k 與 k+1 列／欄之間），
+    不可誤用棋格 pos_to_xy（例如 hd4 為第 4~5 列間的橫溝，不是棋格 d4）。
+    """
+
     def __init__(self, code: str):
         self.orientation = code[0]  # 'h' 或 'v'
-        self.col, self.row = pos_to_xy(code[1:])
+        letter = ord(code[1]) - ord('a')
+        groove = int(code[2])
+        if not (1 <= groove <= BOARD_SIZE - 1):
+            raise ValueError(f"無效的牆體溝槽編號: {code!r}")
+        if self.orientation == 'h':
+            self.col = letter
+            self.row = groove  # 與 _is_blocked_by_wall 向下檢查 ('h', x, y1) 的 y1 一致
+        elif self.orientation == 'v':
+            # 牆 L 在欄 L 與 L+1 之間 → 與 _is_blocked_by_wall 的 ('v', L+1, *) 一致
+            self.col = letter + 1
+            self.row = groove - 1  # 溝槽 k 佔棋格列 y=k-1 與 y=k
+        else:
+            raise ValueError(f"無效的牆體方向: {self.orientation!r}")
 
 
 class Player:
@@ -125,35 +143,87 @@ class Board:
         self.update_all_valid_moves()
 
     def get_valid_moves(self, player: Player) -> set:
-        """回傳指定玩家目前所有可走的格子座標集合"""
+        """
+        回傳指定玩家目前所有可走的格子座標集合
+        
+        規則：
+        1. 可以移動到相鄰的四個方向（上下左右）
+        2. 如果對手球在某個方向，可以穿過對手球跳到後面一格（直線跳躍）
+        3. 如果直線跳躍被牆體阻擋，改成斜角跳躍（嘗試兩個斜角方向）
+        4. 如果斜角位置也被牆體阻擋，該斜角方向不可行
+        """
         x, y = player.pos
         ox, oy = self.other_player.pos
         moves = set()
+        
         for dir_name, (dx, dy) in DIRECTIONS.items():
+            # 相鄰的目標位置
             tx, ty = x + dx, y + dy
+            
+            # 邊界檢查
             if not (0 <= tx < BOARD_SIZE and 0 <= ty < BOARD_SIZE):
                 continue
-            if not self.is_valid_move((x, y), (tx, ty)):
+            
+            # 檢查是否被牆體阻擋（不管是否有對手）
+            if self._is_blocked_by_wall((x, y), (tx, ty)):
                 continue
-            if (tx, ty) != (ox, oy):
-                moves.add((tx, ty))
-            else:
+            
+            # 目標位置是對手位置
+            if (tx, ty) == (ox, oy):
+                # 嘗試直線跳躍：穿過對手到對手後方一格
                 jx, jy = x + STRAIGHT_JUMP[dir_name][0], y + STRAIGHT_JUMP[dir_name][1]
+                
+                # 檢查跳躍目標是否在棋盤內
                 if 0 <= jx < BOARD_SIZE and 0 <= jy < BOARD_SIZE:
-                    if self.is_valid_move((ox, oy), (jx, jy)):
+                    # 檢查直線跳躍是否不被牆體阻擋
+                    if not self._is_blocked_by_wall((ox, oy), (jx, jy)):
                         moves.add((jx, jy))
-                        continue
+                        continue  # 直線跳躍成功，不需考慮斜角
+                
+                # 直線跳躍被阻擋或超出邊界，嘗試斜角跳躍
                 for ddx, ddy in DIAGONAL_JUMP[dir_name]:
                     sx, sy = ox + ddx, oy + ddy
-                    if 0 <= sx < BOARD_SIZE and 0 <= sy < BOARD_SIZE:
-                        if self.is_valid_move((x, y), (ox, oy)) and self.is_valid_move((ox, oy), (sx, sy)):
-                            moves.add((sx, sy))
+                    
+                    # 邊界檢查
+                    if not (0 <= sx < BOARD_SIZE and 0 <= sy < BOARD_SIZE):
+                        continue
+                    
+                    # 檢查斜角位置是否被牆體阻擋
+                    # 斜角位置與對手位置相鄰，所以檢查這一步是否暢通
+                    if not self._is_blocked_by_wall((ox, oy), (sx, sy)):
+                        moves.add((sx, sy))
+            else:
+                # 正常移動到相鄰格子（不是對手位置，且無牆體阻擋）
+                moves.add((tx, ty))
+        
         return moves
 
     def update_all_valid_moves(self):
         """更新雙方玩家的可走格子集合"""
         self.player1.valid_moves = self.get_valid_moves(self.player1)
         self.player2.valid_moves = self.get_valid_moves(self.player2)
+
+    def _is_blocked_by_wall(self, from_pos: Tuple[int, int], to_pos: Tuple[int, int]) -> bool:
+        """
+        判斷相鄰格子之間是否被牆體阻擋（只檢查牆體，不檢查對手或邊界）
+        """
+        x1, y1 = from_pos
+        x2, y2 = to_pos
+        
+        # 上方移動
+        if y2 > y1 and (("h", x1, y1+1) in self.h_walls or ("h", x1-1, y1+1) in self.h_walls):
+            return True
+        # 下方移動
+        if y2 < y1 and (("h", x1, y1) in self.h_walls or ("h", x1-1, y1) in self.h_walls):
+            return True
+        # 右方移動
+        if x2 > x1 and (("v", x1+1, y1) in self.v_walls or ("v", x1+1, y1-1) in self.v_walls):
+            return True
+        # 左方移動
+        if x2 < x1 and (("v", x1, y1) in self.v_walls or ("v", x1, y1-1) in self.v_walls):
+            return True
+        
+        return False
 
     def switch_player(self):
         """切換操控玩家"""
@@ -167,13 +237,8 @@ class Board:
             return False
         if abs(x1 - x2) + abs(y1 - y2) != 1:
             return False
-        if y2 > y1 and (("h", x1, y1+1) in self.h_walls or ("h", x1-1, y1+1) in self.h_walls):
-            return False
-        if y2 < y1 and (("h", x1, y1) in self.h_walls or ("h", x1-1, y1) in self.h_walls):
-            return False
-        if x2 > x1 and (("v", x1+1, y1) in self.v_walls or ("v", x1+1, y1-1) in self.v_walls):
-            return False
-        if x2 < x1 and (("v", x1, y1) in self.v_walls or ("v", x1, y1-1) in self.v_walls):
+        # 只檢查牆體，使用新的方法
+        if self._is_blocked_by_wall(from_pos, to_pos):
             return False
         if to_pos == self.other_player.pos:
             return False
@@ -210,19 +275,17 @@ class Board:
     def is_valid_wall(self, wall: Wall) -> bool:
         """判斷牆體放置是否合法"""
         if wall.orientation == 'h':
-            if not (0 <= wall.col < BOARD_SIZE-1 and 0 <= wall.row < BOARD_SIZE-1):
+            if not (0 <= wall.col < BOARD_SIZE - 1 and 1 <= wall.row <= BOARD_SIZE - 1):
                 return False
             if ('h', wall.col, wall.row) in self.h_walls or ('h', wall.col+1, wall.row) in self.h_walls or ('h', wall.col-1, wall.row) in self.h_walls:
                 return False
-            if ('v', wall.col, wall.row) in self.v_walls or ('v', wall.col+1, wall.row) in self.v_walls:
-                return False
+            # 橫牆與直牆可直角相接（實體規則允許），不與直牆座標互斥
         elif wall.orientation == 'v':
-            if not (0 <= wall.col < BOARD_SIZE-1 and 0 <= wall.row < BOARD_SIZE-1):
+            if not (1 <= wall.col <= BOARD_SIZE - 1 and 0 <= wall.row < BOARD_SIZE - 1):
                 return False
             if ('v', wall.col, wall.row) in self.v_walls or ('v', wall.col, wall.row+1) in self.v_walls or ('v', wall.col, wall.row-1) in self.v_walls:
                 return False
-            if ('h', wall.col, wall.row) in self.h_walls or ('h', wall.col, wall.row+1) in self.h_walls:
-                return False
+            # 同上，不與橫牆互斥
         else:
             return False
 
@@ -477,9 +540,9 @@ class Board:
                 else:
                     row_str += ". "
                 
-                # 顯示豎牆（在格子右側）
+                # 顯示豎牆（在格子右側；v_walls 的 col 為欄與欄之間的 x）
                 if board_x < BOARD_SIZE - 1:
-                    if ('v', board_x, board_y) in self.v_walls:
+                    if ('v', board_x + 1, board_y) in self.v_walls:
                         row_str += "│"
                     else:
                         row_str += " "
@@ -501,7 +564,10 @@ class Board:
                     # 牆壁交叉點檢查
                     if board_x < BOARD_SIZE - 1:
                         has_h = ('h', board_x, board_y) in self.h_walls
-                        has_v = ('v', board_x, board_y) in self.v_walls
+                        has_v = (
+                            ('v', board_x + 1, board_y) in self.v_walls
+                            or ('v', board_x + 1, board_y - 1) in self.v_walls
+                        )
                         
                         if has_h and has_v:
                             wall_row += "┼"
@@ -552,21 +618,21 @@ class Board:
         h_walls_list = []
         v_walls_list = []
         
-        seen_h_walls = set()
+        seen_h_codes = set()
         for _, col, row in self.h_walls:
-            if col not in seen_h_walls or row not in seen_h_walls:
-                wall_code = 'h' + xy_to_pos(col, row)
-                if wall_code not in h_walls_list:
+            if ('h', col + 1, row) in self.h_walls:
+                wall_code = 'h' + chr(ord('a') + col) + str(row)
+                if wall_code not in seen_h_codes:
+                    seen_h_codes.add(wall_code)
                     h_walls_list.append(wall_code)
-                seen_h_walls.add((col, row))
-        
-        seen_v_walls = set()
+
+        seen_v_codes = set()
         for _, col, row in self.v_walls:
-            if (col, row) not in seen_v_walls:
-                wall_code = 'v' + xy_to_pos(col, row)
-                if wall_code not in v_walls_list:
+            if ('v', col, row + 1) in self.v_walls:
+                wall_code = 'v' + chr(ord('a') + col - 1) + str(row + 1)
+                if wall_code not in seen_v_codes:
+                    seen_v_codes.add(wall_code)
                     v_walls_list.append(wall_code)
-                seen_v_walls.add((col, row))
         
         winner = self.check_win()
         

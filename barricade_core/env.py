@@ -124,12 +124,12 @@ class QuoridorEnv(gymnasium.Env):
         """
         執行動作，符合 Gymnasium 標準回傳 5 個值
         
-        重構的獎勵設計（導向目標型）：
-        - 強化距離差獎勵：(delta_self * 5.0) + (delta_opponent * 5.0)
-        - 放牆激勵：成功 +1.0，顯著阻挡 +10.0
-        - 已有 Masking，移除非法動作懲罰
-        - 勝利：+200
-        - 超時：-5
+        獎勵設計：
+        - 距離差：(delta_self * 5.0) + (delta_opponent * 5.0)
+          （delta_opponent：對手最短路徑變長為正，與 rules.evaluate_action_reward 一致）
+        - 放牆：無基礎刷分；僅當對手最短路徑變長時額外 +增量*2.0
+        - 每步小額步數懲罰 -0.05
+        - 勝利：+200；超時等維持既有邏輯
         """
         self.step_count += 1
         
@@ -168,8 +168,8 @@ class QuoridorEnv(gymnasium.Env):
         opponent_distance_after = self.board.get_distance_to_goal(self.board.other_player.name)
         
         # 4.1 計算距離差獎勵
-        # delta_self: 我方距離減少（更接近終點）為正值
-        # delta_opponent: 對手距離增加（被阻礙）為正值
+        # delta_self: 我方最短路徑成本減少（更接近終點）為正值
+        # delta_opponent: 對手最短路徑成本增加（被阻礙）為正值（after - before）
         if self_distance_after != -1:
             delta_self = self_distance_before - self_distance_after
         else:
@@ -180,21 +180,18 @@ class QuoridorEnv(gymnasium.Env):
             return self._get_observation(), reward, terminated, truncated, info
         
         if opponent_distance_after != -1:
-            delta_opponent = opponent_distance_before - opponent_distance_after
+            delta_opponent = opponent_distance_after - opponent_distance_before
         else:
-            delta_opponent = 0  # 對手被封鎖不懲罰，但也不額外獎勵
+            delta_opponent = 0  # 對手無法到達終點（合法局面下極少見）不計入距離差
         
         # 強化距離差獎勵
         reward += (delta_self * 5.0) + (delta_opponent * 5.0)
         
-        # 4.2 放牆激勵
-        if action_type == 'wall':
-            # 放置牆體成功，基礎獎勵
-            reward += 1.0
-            
-            # 如果該牆體導致對手的最短路徑顯著增加
-            if delta_opponent > 0:
-                reward += 10.0
+        # 4.2 放牆：僅在拉長對手最短路徑時額外獎勵（無放牆基礎分）
+        if action_type == 'wall' and opponent_distance_after != -1:
+            opp_path_delta = opponent_distance_after - opponent_distance_before
+            reward += max(0, opp_path_delta) * 2.0
+            if opp_path_delta > 0:
                 info['wall_effective'] = True
         
         # 4.3 基本步數稅（略微懲罰每一步，鼓勵高效）
