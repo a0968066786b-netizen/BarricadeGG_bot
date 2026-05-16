@@ -124,12 +124,28 @@ class QuoridorEnv(gymnasium.Env):
         """
         執行動作，符合 Gymnasium 標準回傳 5 個值
         
-        獎勵設計：
-        - 距離差：(delta_self * 5.0) + (delta_opponent * 5.0)
-          （delta_opponent：對手最短路徑變長為正，與 rules.evaluate_action_reward 一致）
-        - 放牆：無基礎刷分；僅當對手最短路徑變長時額外 +增量*2.0
-        - 每步小額步數懲罰 -0.05
-        - 勝利：+200；超時等維持既有邏輯
+        獎勵設計（路徑差值獎勵機制）：
+        ============================================================
+        【移動動作】：
+        - 我方距離差獎勵：delta_self * 5.0（更接近終點為正）
+        - 對手距離差獎勵：delta_opponent * 5.0（對手被遠離為正）
+        - 基本步數稅：-0.05
+        
+        【放牆動作】：
+        A. 非法放牆或無效放牆（路徑未變長）：-0.05
+           - Action Mask 判定為非法，或
+           - 放牆後對手最短路徑長度沒變長
+           
+        B. 有效放牆（成功卡位）：+0.5 × (路徑增量)
+           - 放牆後對手最短路徑變長
+           - 增量 = 放牆後步數 - 放牆前步數
+        
+        【特殊事件】：
+        - 勝利：+200
+        - 失敗（對手勝利）：-50
+        - 自己被完全封鎖：-50
+        - 超時：-50
+        ============================================================
         """
         self.step_count += 1
         
@@ -138,64 +154,107 @@ class QuoridorEnv(gymnasium.Env):
         truncated = False
         info = {}
         
-        # 1. 檢查動作是否合法（雖然 Masking 應該防止非法動作，但仍做防守性檢查）
+        # 1. 檢查動作是否合法（使用 Action Mask）
         legal_mask = self._get_legal_actions_mask()
         if not legal_mask[action]:
-            # 已有 Masking，此情況理論上不應發生，若發生則忽略並切換玩家
+            # 非法動作（不應發生，因為有 Masking），給予懲罰並換人
             info['reason'] = 'illegal_action_masked'
-            self.board.switch_player()
+            reward = -0.05  # 微小懲罰
+            # self.board.switch_player()#這裡非法就給懲罰就好，不要換人
             return self._get_observation(), reward, terminated, truncated, info
         
-        # 2. 記錄動作前的狀態（用於計算距離差）
+        # 2. 記錄動作前的狀態
         action_type, param = action_id_to_action(action)
         
-        # 獲取執行動作前的雙方到終點距離
-        self_distance_before = self.board.get_distance_to_goal(self.board.current_player.name)
-        opponent_distance_before = self.board.get_distance_to_goal(self.board.other_player.name)
+        # 記錄動作前對手的最短路徑長度
+        opponent_distance_before = self.board.calc_shortest_path_cost(
+            self.board.other_player.pos,
+            self.board.other_player.goal_row
+        )
+        
+        # 記錄動作前我方的最短路徑長度
+        self_distance_before = self.board.calc_shortest_path_cost(
+            self.board.current_player.pos,
+            self.board.current_player.goal_row
+        )
         
         # 3. 執行動作
         success = self.board.take_action(action_type, param)
         
         if not success:
-            # 動作失敗（不應發生，因為已檢查合法性），切換玩家
+            # 動作失敗（不應發生），給予懲罰並換人
             info['reason'] = 'action_failed'
-            self.board.switch_player()
+            reward = -0.05  # 微小懲罰
+            # self.board.switch_player()
             return self._get_observation(), reward, terminated, truncated, info
         
         # 4. 動作成功，計算獎勵
-        # 獲取執行動作後的雙方到終點距離
-        self_distance_after = self.board.get_distance_to_goal(self.board.current_player.name)
-        opponent_distance_after = self.board.get_distance_to_goal(self.board.other_player.name)
+        # 記錄動作後我方的最短路徑長度
+        self_distance_after = self.board.calc_shortest_path_cost(
+            self.board.current_player.pos,
+            self.board.current_player.goal_row
+        )
         
-        # 4.1 計算距離差獎勵
-        # delta_self: 我方最短路徑成本減少（更接近終點）為正值
-        # delta_opponent: 對手最短路徑成本增加（被阻礙）為正值（after - before）
-        if self_distance_after != -1:
-            delta_self = self_distance_before - self_distance_after
-        else:
+        # 記錄動作後對手的最短路徑長度
+        opponent_distance_after = self.board.calc_shortest_path_cost(
+            self.board.other_player.pos,
+            self.board.other_player.goal_row
+        )
+        
+        # 4.1 檢查我方是否被完全封鎖
+        if self_distance_after == -1:
             # 自己被封鎖，終止遊戲
             reward = -50.0
             terminated = True
             info['reason'] = 'self_blocked'
             return self._get_observation(), reward, terminated, truncated, info
         
-        if opponent_distance_after != -1:
-            delta_opponent = opponent_distance_after - opponent_distance_before
+        # 4.2 計算距離差獎勵（針對所有動作類型）
+        delta_self = self_distance_before - self_distance_after
+        
+        if opponent_distance_after == -1:
+            # 對手無法到達終點（極少見），不計入距離差
+            delta_opponent = 0
         else:
-            delta_opponent = 0  # 對手無法到達終點（合法局面下極少見）不計入距離差
+            delta_opponent = opponent_distance_after - opponent_distance_before
         
-        # 強化距離差獎勵
-        reward += (delta_self * 5.0) + (delta_opponent * 5.0)
-        
-        # 4.2 放牆：僅在拉長對手最短路徑時額外獎勵（無放牆基礎分）
-        if action_type == 'wall' and opponent_distance_after != -1:
-            opp_path_delta = opponent_distance_after - opponent_distance_before
-            reward += max(0, opp_path_delta) * 2.0
-            if opp_path_delta > 0:
+        # 4.3 根據動作類型計算獎勵
+        if action_type == 'move':
+            # 移動動作：距離差獎勵 + 基本步數稅
+            reward += (delta_self * 5.0) + (delta_opponent * 5.0)
+            reward -= 0.05  # 每步小額步數懲罰
+            info['action_type'] = 'move'
+            
+        elif action_type == 'wall':
+            # 放牆動作：使用路徑差值獎勵機制
+            if opponent_distance_before == -1:
+                # 對手原本就無路可走，不記為有效放牆
+                reward = -0.05  # 無效放牆，微小懲罰
+                info['wall_effective'] = False
+                info['reason'] = 'opponent_already_blocked'
+            elif opponent_distance_after == -1:
+                # 放牆後對手無路可走（成功完全封鎖）
+                wall_path_delta = opponent_distance_before  # 路徑變為無窮大
+                reward = 0.5 * wall_path_delta  # 獎勵設定為 0.5 × 原路徑長度
                 info['wall_effective'] = True
-        
-        # 4.3 基本步數稅（略微懲罰每一步，鼓勵高效）
-        reward -= 0.05
+                info['wall_path_delta'] = wall_path_delta
+                info['reason'] = 'opponent_completely_blocked'
+            else:
+                # 正常情況：比較路徑變化
+                wall_path_delta = opponent_distance_after - opponent_distance_before
+                
+                if wall_path_delta > 0:
+                    # 成功卡位：路徑變長，給予獎勵
+                    reward = 0.5 * wall_path_delta
+                    info['wall_effective'] = True
+                    info['wall_path_delta'] = wall_path_delta
+                    info['reason'] = 'wall_successful_blocking'
+                else:
+                    # 無效放牆：路徑未變長或更短，給予懲罰
+                    reward = -0.05
+                    info['wall_effective'] = False
+                    info['wall_path_delta'] = wall_path_delta
+                    info['reason'] = 'wall_ineffective'
         
         # 5. 檢查勝利條件
         winner = self.board.check_win()

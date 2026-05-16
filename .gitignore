@@ -22,3 +22,8 @@ env/
 .DS_Store
 .vscode/
 .idea/
+
+# --- 測試跟後續等使用 ---
+test_human_intuition.py
+test_movement.py
+visualize_training.py
