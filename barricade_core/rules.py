@@ -177,6 +177,7 @@ class Board:
         self._occupied_junctions: Set[str] = set()
         self._sync_wall_tuple_sets()
         self.update_all_valid_moves()
+        self.action_history = []
 
     # --- 座標：Python (x,y) <-> C# (row,col)；row=0 在頂、對應 Python 最大 y ---
 
@@ -414,10 +415,17 @@ class Board:
         return True
 
     def walk_to(self, target_code: str) -> bool:
+        old_pos = self.current_player.pos# 舊 位置
         target = pos_to_xy(target_code)
         if target in self.current_player.valid_moves:
             self.current_player.pos = target
             self.update_all_valid_moves()
+            # 🌟 成功後，把「舊座標」記下來
+            self.action_history.append({
+                'type': 'move',
+                'old_pos': old_pos,
+                'player_name': self.current_player.name # 記下是誰動的
+            })
             return True
         print("移動失敗：不合法的移動")
         return False
@@ -591,6 +599,70 @@ class Board:
         
         self.current_player.walls_left -= 1
         self._sync_wall_tuple_sets()
+        self.update_all_valid_moves()
+        #紀錄歷史動作
+        self.action_history.append({
+            'type': 'wall',
+            'wall_param': code,
+            'player_name': self.current_player.name,
+        })
+        return True
+
+    def undo_action(self):
+        """
+        復原上一步動作（移動或放牆），並強制刷新棋盤狀態。
+        你可以理解為我們對棋盤按了一次ctrl z
+
+        Returns:
+            True 如果成功復原，False 如果無歷史紀錄
+        """
+        if not self.action_history:
+            return False  # 沒有歷史紀錄可以復原
+            
+        # 彈出最後一次寫入的紀錄
+        last_action = self.action_history.pop()
+        
+        if last_action['type'] == 'move':
+            # 🛠️ 移動的逆操作：把座標硬改回舊座標
+            if self.player1.name == last_action['player_name']:
+                self.player1.pos = last_action['old_pos']
+            else:
+                self.player2.pos = last_action['old_pos']
+                
+        elif last_action['type'] == 'wall':
+            # 🛠️ 放牆的逆操作：把這面牆從地圖清單中安全拆除
+            wall_code = last_action['wall_param']
+            player_name = last_action['player_name']
+            
+            # 取得放置該牆的玩家
+            if player_name == self.player1.name:
+                player = self.player1
+            else:
+                player = self.player2
+            
+            # 解析牆體代碼
+            wall = Wall(wall_code)
+            kind, pr, pc = self._wall_to_cs_indices(wall)
+            
+            # 從牆體陣列中移除（反向 place_wall 的設置）
+            if kind == "h":
+                self._horizontal[pr][pc] = False
+                self._horizontal[pr][pc + 1] = False
+            else:  # kind == "v"
+                self._vertical[pr][pc] = False
+                self._vertical[pr + 1][pc] = False
+            
+            # 從交叉點記錄中移除
+            junction = self._get_junction_from_code(wall_code)
+            self._occupied_junctions.discard(junction)
+            
+            # 恢復玩家的牆體數量
+            player.walls_left += 1
+            
+            # 同步牆體集合
+            self._sync_wall_tuple_sets()
+                
+        # 🌟 復原完畢，強制同步刷新棋盤可走格子的矩陣狀態
         self.update_all_valid_moves()
         return True
 

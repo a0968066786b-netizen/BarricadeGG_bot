@@ -129,10 +129,10 @@ class QuoridorEnv(gymnasium.Env):
         【移動動作】：
         - 我方距離差獎勵：delta_self * 5.0（更接近終點為正）
         - 對手距離差獎勵：delta_opponent * 5.0（對手被遠離為正）
-        - 基本步數稅：-0.05
+        - 基本步數稅：-0.5
         
         【放牆動作】：
-        A. 非法放牆或無效放牆（路徑未變長）：-0.05
+        A. 無效放牆（路徑未變長）：-0.5
            - Action Mask 判定為非法，或
            - 放牆後對手最短路徑長度沒變長
            
@@ -144,6 +144,7 @@ class QuoridorEnv(gymnasium.Env):
         - 勝利：+200
         - 失敗（對手勝利）：-50
         - 自己被完全封鎖：-50
+        - 非法動作：-2
         - 超時：-50
         ============================================================
         """
@@ -152,15 +153,19 @@ class QuoridorEnv(gymnasium.Env):
         reward = 0.0
         terminated = False
         truncated = False
+        ILLEGAL_ACTION_SCORE = -2.0 # 非法動作的懲罰
+        INEFFECTIVE_WALKING = -0.5 # 無效移動的懲罰
+        INEFFECTIVE_WALL = -1.0 # 無效放牆的懲罰
         info = {}
         
         # 1. 檢查動作是否合法（使用 Action Mask）
         legal_mask = self._get_legal_actions_mask()
         if not legal_mask[action]:
-            # 非法動作（不應發生，因為有 Masking），給予懲罰並換人
+            # 非法動作（不應發生，因為有 Masking），給予懲罰
             info['reason'] = 'illegal_action_masked'
-            reward = -0.05  # 微小懲罰
+            reward = ILLEGAL_ACTION_SCORE
             # self.board.switch_player()#這裡非法就給懲罰就好，不要換人
+            self.step_count -= 1 # 這裡非法就給懲罰就好，不要增加步數
             return self._get_observation(), reward, terminated, truncated, info
         
         # 2. 記錄動作前的狀態
@@ -178,14 +183,21 @@ class QuoridorEnv(gymnasium.Env):
             self.board.current_player.goal_row
         )
         
+        #行動前檢查一下，棋盤面是否已經違反規則了
+        #(這裡是檢查牆是否已封鎖玩家的狀態)
+        is_historical_corrupted = (self_distance_before == -1 or opponent_distance_before == -1)
+
         # 3. 執行動作
         success = self.board.take_action(action_type, param)
+        # 強制同步更新狀態
+        self.board.update_all_valid_moves()
         
         if not success:
-            # 動作失敗（不應發生），給予懲罰並換人
+            # 動作失敗（不應發生），給予懲罰
             info['reason'] = 'action_failed'
-            reward = -0.05  # 微小懲罰
+            reward = ILLEGAL_ACTION_SCORE
             # self.board.switch_player()
+            self.step_count -= 1 
             return self._get_observation(), reward, terminated, truncated, info
         
         # 4. 動作成功，計算獎勵
@@ -201,60 +213,71 @@ class QuoridorEnv(gymnasium.Env):
             self.board.other_player.goal_row
         )
         
-        # 4.1 檢查我方是否被完全封鎖
+        # 4.1 檢查幹了一個我方與對方是否被完全封鎖的放牆動作(封鎖本身就是一個非法動作)
         if self_distance_after == -1:
-            # 自己被封鎖，終止遊戲
-            reward = -50.0
-            terminated = True
+            # 自己被封鎖
+            reward = ILLEGAL_ACTION_SCORE
             info['reason'] = 'self_blocked'
+            #復原一次錯誤的狀態(也就是此次的操作錯誤)
+            self.board.undo_action()
+            self.step_count -= 1
             return self._get_observation(), reward, terminated, truncated, info
+        
+        if opponent_distance_after == -1:
+            # 對方被封鎖
+            reward = ILLEGAL_ACTION_SCORE
+            info['reason'] = 'opponent_completely_blocked_illegal'
+            #復原一次錯誤的狀態(也就是此次的操作錯誤)
+            self.board.undo_action()
+            self.step_count -= 1
+            return self._get_observation(), reward, terminated, truncated, info
+        
+        if self.board.player1.pos == self.board.player2.pos:
+            # 🌟 【防線：行動後攔截當前違規】防止重疊 Bug
+            info['reason'] = 'bug_illegal_pawn_overlap'
+            reward = ILLEGAL_ACTION_SCORE  # 發現重疊，扣分退回
+            #復原一次錯誤的狀態(也就是此次的操作錯誤)
+            self.board.undo_action()
+            self.step_count -= 1
+            return self._get_observation(), reward, terminated, truncated, info
+        
         
         # 4.2 計算距離差獎勵（針對所有動作類型）
         delta_self = self_distance_before - self_distance_after
-        
-        if opponent_distance_after == -1:
-            # 對手無法到達終點（極少見），不計入距離差
-            delta_opponent = 0
-        else:
-            delta_opponent = opponent_distance_after - opponent_distance_before
+        delta_opponent = opponent_distance_after - opponent_distance_before
         
         # 4.3 根據動作類型計算獎勵
-        if action_type == 'move':
-            # 移動動作：距離差獎勵 + 基本步數稅
-            reward += (delta_self * 5.0) + (delta_opponent * 5.0)
-            reward -= 0.05  # 每步小額步數懲罰
+        #優先判斷爛旗面（歷史盤面已經違規了），不管它走得多漂亮，一律沒收正分，直接給予懲罰！
+        # 這樣可以防止爛旗面學習到一些奇怪的行為模式
+        if is_historical_corrupted:
+            # 🌟 歷史旗面有被封鎖
+            reward = ILLEGAL_ACTION_SCORE
+            info['reason'] = 'punished_for_historical_corruption'
+        
+        elif action_type == 'move':
+            if delta_self == 0 and delta_opponent == 0:
+                reward = INEFFECTIVE_WALKING  # 每步小額步數懲罰
+            else:
+                reward += (delta_self * 5.0) + (delta_opponent * 5.0)
+                reward -= 0.05  # 步數稅        
             info['action_type'] = 'move'
             
         elif action_type == 'wall':
-            # 放牆動作：使用路徑差值獎勵機制
-            if opponent_distance_before == -1:
-                # 對手原本就無路可走，不記為有效放牆
-                reward = -0.05  # 無效放牆，微小懲罰
-                info['wall_effective'] = False
-                info['reason'] = 'opponent_already_blocked'
-            elif opponent_distance_after == -1:
-                # 放牆後對手無路可走（成功完全封鎖）
-                wall_path_delta = opponent_distance_before  # 路徑變為無窮大
-                reward = 0.5 * wall_path_delta  # 獎勵設定為 0.5 × 原路徑長度
+            # 正常情況：比較路徑變化
+            wall_path_delta = opponent_distance_after - opponent_distance_before
+                
+            if wall_path_delta > 0:
+                # 成功卡位：路徑變長，給予獎勵
+                reward = 0.5 * wall_path_delta
                 info['wall_effective'] = True
                 info['wall_path_delta'] = wall_path_delta
-                info['reason'] = 'opponent_completely_blocked'
+                info['reason'] = 'wall_successful_blocking'
             else:
-                # 正常情況：比較路徑變化
-                wall_path_delta = opponent_distance_after - opponent_distance_before
-                
-                if wall_path_delta > 0:
-                    # 成功卡位：路徑變長，給予獎勵
-                    reward = 0.5 * wall_path_delta
-                    info['wall_effective'] = True
-                    info['wall_path_delta'] = wall_path_delta
-                    info['reason'] = 'wall_successful_blocking'
-                else:
-                    # 無效放牆：路徑未變長或更短，給予懲罰
-                    reward = -0.05
-                    info['wall_effective'] = False
-                    info['wall_path_delta'] = wall_path_delta
-                    info['reason'] = 'wall_ineffective'
+                # 無效放牆：路徑未變長或更短，給予懲罰
+                reward = INEFFECTIVE_WALL
+                info['wall_effective'] = False
+                info['wall_path_delta'] = wall_path_delta
+                info['reason'] = 'wall_ineffective'
         
         # 5. 檢查勝利條件
         winner = self.board.check_win()
