@@ -131,18 +131,23 @@ def play_game(model_path: str):
         action_masks = env.action_masks()
         action, _ = model.predict(obs, action_masks=action_masks, deterministic=True)
         
+        #先輸出及時戰況
+        env.render()
+ 
         # 執行動作
         obs, reward, terminated, truncated, info = env.step(int(action))
         step_count += 1
-        
-        env.render()
+
         print(f"Step {step_count} | Action: {action_id_to_action( int(action) )} | Reward: {reward:.2f}")
         print("-" * 60)
-    
-    print(f"遊戲結束!")
+
+    print("\n最終戰況")
+    env.render() # 最終渲染遊戲結束的狀態
+    # print("-" * 60)
+    print(f"\n遊戲結束!")
     print(f"總步數: {step_count}")
     if 'winner' in info:
-        print(f"結果: {info['winner']}")
+        print(f"贏家: {info['winner']}")
     
     env.close()
 
