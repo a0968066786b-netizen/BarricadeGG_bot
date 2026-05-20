@@ -117,18 +117,18 @@ class QuoridorEnv(gymnasium.Env):
     
     def _apply_snowball_penalty(self) -> float:
         """
-        【不對稱雙向滾雪球計數器 - 犯錯懲罰】
+        【違規高利貸機制 - Violation Stack Ratio 3:1】
         
         當 AI 犯錯（違規或無效動作）時：
-        1. violation_stack += 1（錯誤欠債加重）
-        2. valid_streak = 0（好不容易累積的連勝紀錄一秒破功）
-        3. 根據 violation_stack 層級進行階梯式或巨額懲罰
+        1. violation_stack += 3（錯誤欠債加重3倍）
+        2. valid_streak = 0（連勝紀錄直接歸零）
+        3. 必須用 3 步正確動作才能彌補 1 步錯誤
         
         Returns:
             額外懲罰金額（負數）
         """
-        self.violation_stack += 1
-        self.valid_streak = 0  # 致命大棒：連勝紀錄直接歸零
+        self.violation_stack += 3  # 核心規則：無效動作 +3
+        self.valid_streak = 0      # 連勝紀錄歸零
         
         # 階梯式 + 巨額懲罰邏輯
         if self.violation_stack >= 5:
@@ -142,25 +142,26 @@ class QuoridorEnv(gymnasium.Env):
     
     def _apply_snowball_reward(self) -> float:
         """
-        【不對稱雙向滾雪球計數器 - 正確獎勵】
+        【連續走對獎勵階梯化 - Streak Reward Tiering】
         
         當 AI 做對（有效動作）時：
-        1. violation_stack = max(0, violation_stack - 1)（債務只能靠做好事緩慢減少）
+        1. violation_stack = max(0, violation_stack - 1)（債務每次減1）
         2. valid_streak += 1（連勝紀錄滾雪球）
-        3. 根據 valid_streak 層級進行小額滾雪球或巨額胡蘿蔔
+        3. 根據 valid_streak 層級進行小額階梯式獎勵
+           - 0 < valid_streak <= 15: streak_reward = 0.2 * valid_streak
+           - valid_streak > 15: 穩定獎勵上限 +10.0
         
         Returns:
             額外獎勵金額（正數）
         """
-        self.violation_stack = max(0, self.violation_stack - 1)
+        self.violation_stack = max(0, self.violation_stack - 1)  # 核心規則：有效動作 -1
         self.valid_streak += 1
         
-        # 滾雪球小獎勵 + 高智商巨額胡蘿蔔
-        streak_reward = 0.2 * self.valid_streak
-        
-        if self.valid_streak >= 15:
-            # 觸發高智商好棋門檻：一次性巨額胡蘿蔔
-            streak_reward += 50.0
+        # 階梯式獎勵邏輯（遠低於勝利獎勵，無法成為主要獲利來源）
+        if 0 < self.valid_streak <= 15:
+            streak_reward = 0.2 * self.valid_streak  # 低額階梯獎勵 (0.2 ~ 3.0)
+        else:  # valid_streak > 15
+            streak_reward = 10.0  # 穩定獎勵上限
         
         return streak_reward
 
@@ -361,22 +362,50 @@ class QuoridorEnv(gymnasium.Env):
                 info['reason'] = 'wall_ineffective'
                 is_invalid = True
 
+        # ========== 核心規則1: 贏棋破產豁免與雙重激勵 ==========
         # 5. 檢查勝利條件
         winner = self.board.check_win()
         if winner:
             terminated = True
             if winner == self.board.current_player.name:
-                reward += 200.0
+                # 【贏棋破產豁免】強制清除所有債務
+                self.violation_stack = 0
+                self.valid_streak = 0
+                if reward <= -5000.0:
+                    reward = 0.0  # 破產豁免：勝利不應該是負分
+
+                # 【絕對勝負獎勵】基礎勝利獎勵
+                WIN_REWARD = 5000.0
+                reward += WIN_REWARD
+                
+                # 【速度複利獎勵】快速贏棋額外獎勵
+                remaining_steps = self.max_steps - self.step_count
+                speed_bonus = min(100.0 * (1.1 ** remaining_steps), 5000.0)
+                reward += speed_bonus
+                
                 info['winner'] = self.board.current_player.name
+                info['win_reward'] = WIN_REWARD
+                info['speed_bonus'] = speed_bonus
             else:
-                reward -= 50.0
+                # 【絕對失敗懲罰】毀滅性懲罰
+                LOSS_PENALTY = -5000.0
+                reward += LOSS_PENALTY
                 info['winner'] = self.board.other_player.name
+                info['loss_penalty'] = LOSS_PENALTY
         
+        # ========== 核心規則4: 終極超時複利懲罰與上限 ==========
         # 6. 檢查超時
         elif self.step_count >= self.max_steps:
             truncated = True
-            reward -= 50.0
+            # 計算超時複利懲罰
+            excess_steps = self.step_count - self.max_steps
+            compound_penalty = -100.0 * (1.5 ** excess_steps)
+            # 安全鎖：超時懲罰下限等同於輸棋懲罰
+            compound_penalty = max(compound_penalty, -5000.0)
+            reward += compound_penalty
             info['reason'] = 'max_steps_exceeded'
+            info['excess_steps'] = excess_steps
+            info['timeout_penalty'] = compound_penalty
         
         # 7. 【滾雪球結算中心】應用不對稱雙向計數器獎懲
         if is_violation or is_invalid:

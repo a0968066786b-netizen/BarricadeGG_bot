@@ -11,11 +11,21 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import numpy as np
 from sb3_contrib import MaskablePPO
-from stable_baselines3.common.callbacks import CheckpointCallback
+from stable_baselines3.common.callbacks import CheckpointCallback , BaseCallback
 from sb3_contrib.common.maskable.policies import MaskableActorCriticPolicy
+from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
+from stable_baselines3.common.env_util import make_vec_env
 
 from barricade_core import QuoridorEnv
 
+def linear_schedule(initial_value: float):
+    """
+    線性遞減函數：從初始值隨著訓練進度趨近於 0
+    """
+    def func(progress_remaining: float) -> float:
+        # progress_remaining 會從 1.0 遞減到 0.0
+        return initial_value * progress_remaining
+    return func
 
 def train_ppo_agent(
     total_timesteps: int = 100000,
@@ -46,19 +56,20 @@ def train_ppo_agent(
     print()
     
     # 創建環境
-    env = QuoridorEnv()
-    
+    # env = QuoridorEnv()
+    env = make_vec_env(lambda: QuoridorEnv(), n_envs=1)
+    env = VecNormalize(env, norm_reward=True, clip_reward=10.0) # clip_reward 很重要！
     # 配置 MaskablePPO 策略和超參數
     model = MaskablePPO(
         policy=MaskableActorCriticPolicy,
         env=env,
-        learning_rate=learning_rate,
+        learning_rate=linear_schedule(learning_rate),
         n_steps=n_steps,
         batch_size=batch_size,
         n_epochs=10,
         gamma=0.99,
         gae_lambda=0.95,
-        clip_range=0.2,
+        clip_range=0.15,
         ent_coef=0.05,  # 提高熵係數以增加探索能力（原為 0.0）
         vf_coef=0.5,
         max_grad_norm=0.5,
@@ -90,7 +101,10 @@ def train_ppo_agent(
     # 保存最終模型
     final_model_path = os.path.join(save_dir, 'quoridor_ppo_final.zip')
     model.save(final_model_path)
-    print(f"\n最終模型已保存到: {final_model_path}")
+    final_env_path= os.path.join(save_dir, 'quoridor_ppo_final_env.pkl')
+    env.save(final_env_path)
+    print(f"\n最終模型已保存到: {final_model_path}"
+          f"環境統計數據已保存到: {final_env_path}")
     
     env.close()
     return model

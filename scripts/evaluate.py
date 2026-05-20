@@ -11,9 +11,28 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import numpy as np
 from sb3_contrib import MaskablePPO
+from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
+
 
 from barricade_core import QuoridorEnv,action_id_to_action
 
+def load_env_and_model(model_path: str):
+    # 1. 創建原始環境
+    base_env = QuoridorEnv(render_mode='human')
+    env = DummyVecEnv([lambda: base_env])
+    
+    # 2. 載入統計數據 (若不存在則報錯提醒，嚴謹處理)
+    stats_path = os.path.join(os.path.dirname(model_path), 'vec_normalize.pkl')
+    if os.path.exists(stats_path):
+        env = VecNormalize.load(stats_path, env)
+        env.training = False       # 關閉訓練模式
+        env.norm_reward = False    # 關閉獎勵正規化
+    else:
+        print("⚠️ 警告：找不到 vec_normalize.pkl，AI 性能可能大幅下降")
+        
+    # 3. 載入模型
+    model = MaskablePPO.load(model_path, env=env)
+    return model, env
 
 def evaluate_agent(
     model_path: str,
@@ -34,12 +53,10 @@ def evaluate_agent(
     if not os.path.exists(model_path):
         print(f"錯誤: 找不到模型文件 {model_path}")
         return None, None
-    
-    # 加載 MaskablePPO 模型
-    model = MaskablePPO.load(model_path)
-    
-    # 創建環境
-    env = QuoridorEnv(render_mode='human' if render else None)
+
+    # 創建環境並加載 MaskablePPO 模型
+    model, env = load_env_and_model(model_path)
+        
     
     # 統計結果
     wins = 0
@@ -59,11 +76,11 @@ def evaluate_agent(
         while not (terminated or truncated):
             # ✅ 關鍵: 從環境獲取動作遮罩並傳遞給 predict
             # 這確保模型只從合法動作中選擇，不會「盲打」
-            action_masks = env.action_masks()
-            action, _ = model.predict(obs, action_masks=action_masks, deterministic=True)
+            action_masks = env.action_masks()#type: ignore
+            action, _ = model.predict(obs, action_masks=action_masks, deterministic=True)#type: ignore
             
             # 執行動作
-            obs, reward, terminated, truncated, info = env.step(int(action))
+            obs, reward, terminated, truncated, info = env.step(int(action))#type: ignore
             episode_reward += reward
             step_count += 1
             
@@ -74,7 +91,7 @@ def evaluate_agent(
         total_reward += episode_reward
         
         # 判斷勝敗
-        if 'winner' in info and info['winner'] == 'current_player':
+        if 'winner' in info and info['winner'] == 'player1':#type: ignore
             wins += 1
             result = "✓ 勝利"
         else:
@@ -113,10 +130,11 @@ def play_game(model_path: str):
         return
     
     # 加載 MaskablePPO 模型
-    model = MaskablePPO.load(model_path)
+    # model = MaskablePPO.load(model_path)
     
     # 創建環境
-    env = QuoridorEnv(render_mode='human')
+    # env = QuoridorEnv(render_mode='human')
+    model, env = load_env_and_model(model_path)
     
     print("\n開始新遊戲...")
     print("-" * 60)
@@ -128,14 +146,14 @@ def play_game(model_path: str):
     
     while not (terminated or truncated):
         # ✅ 關鍵: 從環境獲取動作遮罩並傳遞給 predict
-        action_masks = env.action_masks()
-        action, _ = model.predict(obs, action_masks=action_masks, deterministic=True)
+        action_masks = env.action_masks()#type: ignore
+        action, _ = model.predict(obs, action_masks=action_masks, deterministic=True)#type: ignore
         
         #先輸出及時戰況
         env.render()
  
         # 執行動作
-        obs, reward, terminated, truncated, info = env.step(int(action))
+        obs, reward, terminated, truncated, info = env.step(int(action))#type: ignore
         step_count += 1
 
         print(f"Step {step_count} | Action: {action_id_to_action( int(action) )} | Reward: {reward:.2f}")
@@ -147,7 +165,7 @@ def play_game(model_path: str):
     print(f"\n遊戲結束!")
     print(f"總步數: {step_count}")
     if 'winner' in info:
-        print(f"贏家: {info['winner']}")
+        print(f"贏家: {info['winner']}")#type: ignore
     
     env.close()
 
